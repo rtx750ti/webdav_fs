@@ -11,6 +11,10 @@ use url::Url;
 
 /// 认证结构体
 /// 
+/// 该结构体定位
+/// - 用于存储基础WebDav认证信息
+/// - 用于RemoteFile和LocalFile的网络访问功能支持
+/// 
 /// 默认Eq时会匹配base_url和token，如果需要单独比较token，需使用eq_only_token方法
 #[derive(Clone)]
 pub struct WebdavAuth {
@@ -20,6 +24,7 @@ pub struct WebdavAuth {
 }
 
 impl WebdavAuth {
+    /// 创建新的认证结构体
     pub fn new(
         username: &str,
         password: &str,
@@ -38,6 +43,7 @@ impl WebdavAuth {
         })
     }
 
+    /// 仅比较token是否相等
     pub fn eq_only_token(&self, other: &Self) -> bool {
         self.encrypted_token == other.encrypted_token
     }
