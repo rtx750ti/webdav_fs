@@ -11,14 +11,14 @@ use crate::remote_file::download::HookAbort;
 use crate::remote_file::{
     DownloadError, DownloadResult, RemoteFileDownloader,
 };
-use crate::tests::{TestVendor, load_account_optional};
+use crate::tests::{load_account_optional, TestVendor};
 
 /// Windows 下本地保存目录
 const SAVE_DIR: &str = r"C:\project\test\test_download_files";
 
 /// 获取一个远程文件（非目录），无则返回 None（跳过测试）。
-async fn require_one_remote_file()
--> Option<(crate::remote_file::RemoteFile, crate::auth::WebdavAuth)> {
+async fn require_one_remote_file(
+) -> Option<(crate::remote_file::RemoteFile, crate::auth::WebdavAuth)> {
     let auth = load_account_optional(TestVendor::Teracloud)?
         .to_webdav_auth()
         .ok()?;
@@ -39,7 +39,7 @@ async fn download_output_bytes_only() {
 
     let downloader: RemoteFileDownloader =
         remote_file.build_downloader(&auth);
-    let result = downloader.output_bytes(true).send().await;
+    let result = downloader.output_bytes().send().await;
 
     let result = match result {
         Ok(r) => r,
@@ -55,6 +55,7 @@ async fn download_output_bytes_only() {
             println!("纯比特流下载成功，字节数: {}", b.len());
         }
         DownloadResult::Saved => panic!("预期为 Bytes，得到 Saved"),
+        DownloadResult::BytesSegments(_) => panic!("单线程应返回 Bytes，不应为 BytesSegments"),
     }
 }
 
@@ -76,7 +77,8 @@ async fn download_save_to_local() {
     let save_path = save_dir.join(remote_file.data.name.as_str());
     let downloader: RemoteFileDownloader =
         remote_file.build_downloader(&auth);
-    let result = downloader.save_to(&save_path).send().await;
+    let result =
+        downloader.save_to(&save_path).send().await;
 
     let result = match result {
         Ok(r) => r,
@@ -89,6 +91,7 @@ async fn download_save_to_local() {
     match result {
         DownloadResult::Saved => {}
         DownloadResult::Bytes(_) => panic!("预期为 Saved，得到 Bytes"),
+        DownloadResult::BytesSegments(_) => panic!("预期为 Saved，得到 BytesSegments"),
     }
 
     assert!(save_path.exists(), "文件应已保存到 {}", save_path.display());
@@ -144,6 +147,7 @@ async fn download_save_to_local_with_progress_watch() {
     match result {
         DownloadResult::Saved => {}
         DownloadResult::Bytes(_) => panic!("预期为 Saved"),
+        DownloadResult::BytesSegments(_) => panic!("预期为 Saved，得到 BytesSegments"),
     }
 
     assert!(save_path.exists(), "文件应已保存到 {}", save_path.display());
@@ -173,7 +177,7 @@ async fn download_hook_before_start() {
 
     let downloader = remote_file
         .build_downloader(&auth)
-        .output_bytes(true)
+        .output_bytes()
         .with_before_start_hook(move || {
             let flag = Arc::clone(&before_called_clone);
             async move {
@@ -204,6 +208,7 @@ async fn download_hook_before_start() {
             );
         }
         DownloadResult::Saved => panic!("预期 Bytes"),
+        DownloadResult::BytesSegments(_) => panic!("单线程应返回 Bytes"),
     }
 }
 
@@ -217,7 +222,7 @@ async fn download_hook_before_start_abort() {
 
     let downloader = remote_file
         .build_downloader(&auth)
-        .output_bytes(true)
+        .output_bytes()
         .with_before_start_hook(|| async { Err(HookAbort) });
 
     let result = downloader.send().await;
@@ -246,7 +251,7 @@ async fn download_hook_on_progress() {
 
     let downloader = remote_file
         .build_downloader(&auth)
-        .output_bytes(true)
+        .output_bytes()
         .with_on_progress_hook(move |bytes_done, total| {
             progress_calls_c.lock().unwrap().push((bytes_done, total));
         });
@@ -263,6 +268,7 @@ async fn download_hook_on_progress() {
     let bytes_len = match &result {
         DownloadResult::Bytes(b) => b.len() as u64,
         DownloadResult::Saved => panic!("预期 Bytes"),
+        DownloadResult::BytesSegments(seg) => seg.total_len(),
     };
 
     let calls = progress_calls.lock().unwrap();
@@ -296,7 +302,7 @@ async fn download_hook_after_complete() {
 
     let downloader = remote_file
         .build_downloader(&auth)
-        .output_bytes(true)
+        .output_bytes()
         .with_after_complete_hook(move || {
             let flag = Arc::clone(&after_called_clone);
             async move {
@@ -319,7 +325,7 @@ async fn download_hook_after_complete() {
     );
     println!("[after_complete 钩子] 已调用，下载成功结束");
     match result {
-        DownloadResult::Bytes(_) | DownloadResult::Saved => {}
+        DownloadResult::Bytes(_) | DownloadResult::Saved | DownloadResult::BytesSegments(_) => {}
     }
 }
 
@@ -365,7 +371,7 @@ async fn download_hook_full_trait() {
 
     let downloader = remote_file
         .build_downloader(&auth)
-        .output_bytes(true)
+        .output_bytes()
         .with_hook(FullHook {
             before: Arc::clone(&before),
             chunk_count: Arc::clone(&chunk_count),
@@ -404,6 +410,6 @@ async fn download_hook_full_trait() {
         progress_count.load(Ordering::SeqCst)
     );
     match result {
-        DownloadResult::Bytes(_) | DownloadResult::Saved => {}
+        DownloadResult::Bytes(_) | DownloadResult::Saved | DownloadResult::BytesSegments(_) => {}
     }
 }

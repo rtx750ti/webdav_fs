@@ -41,6 +41,10 @@ pub enum DownloadError {
     #[error("下载被取消")]
     Cancelled,
 
+    /// 多线程下载尚未实现。
+    #[error("多线程下载尚未实现")]
+    MultiThreadUnimplemented,
+
     /// 钩子在 before_start 中返回错误，中止下载。
     #[error("{0}")]
     HookAbort(#[from] HookAbort),
@@ -58,9 +62,9 @@ impl RemoteFileDownloader {
         self
     }
 
-    /// 是否将单线程下载的结果以字节形式返回。
-    pub fn output_bytes(mut self, output: bool) -> Self {
-        self.config.is_output_bytes = output;
+    /// 设置为输出字节数组，默认不输出。
+    pub fn output_bytes(mut self) -> Self {
+        self.config.is_output_bytes = true;
         self
     }
 
@@ -108,7 +112,19 @@ impl RemoteFileDownloader {
     }
 
     /// 执行下载。
+    /// 根据是否开启 output_bytes 与是否多线程（concurrent_chunks > 1）分支：单线程返回 Saved 或 Bytes；多线程暂返回错误，后续实现后返回 BytesSegments。
     pub async fn send(self) -> Result<DownloadResult, DownloadError> {
+        // 判断是否多线程下载，如果concurrent_chunks > 1，则返回错误，后续实现后返回 BytesSegments。
+        let is_multi = self
+            .config
+            .concurrent_chunks
+            .map(|n| n > 1)
+            .unwrap_or(false);
+
+        if is_multi {
+            return Err(DownloadError::MultiThreadUnimplemented);
+        }
+
         run_single_thread_download(
             self.client,
             self.file_data,
