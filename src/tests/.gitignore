@@ -1,0 +1,3 @@
+# 忽略各厂商凭据文件，仅提交模板
+env/*.env
+!env/.env.example

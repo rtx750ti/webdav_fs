@@ -1,0 +1,7 @@
+# 测试用 WebDAV 厂商 id 列表，与 src/tests/env/{id}.env 一一对应。
+# 新增厂商：只需在此添加 id，保存后执行 cargo build 或 cargo test，会自动生成 env/{id}.env；
+# 然后在生成的 env 文件中填写 WEBDAV_URL、WEBDAV_USERNAME、WEBDAV_PASSWORD 即可。
+vendors = [
+    "jianguoyun",
+    "teracloud",
+]

@@ -1,6 +1,9 @@
 /// 内部导出的模块
 mod internal;
 
+#[cfg(test)]
+mod tests;
+
 /// 导出核心入口函数
 pub use internal::entrance::lcoal::*;
 pub use internal::entrance::remote::*;
