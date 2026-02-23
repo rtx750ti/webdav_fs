@@ -9,3 +9,8 @@ alwaysApply: true
 - 本项目为 WebDAV 文件系统库 **webdav_fs**；完整项目记忆见仓库根目录 **AGENTS.md**。
 - 使用 tokio 做异步运行时，reqwest 做 HTTP（rustls、http1_only），错误处理混用 `Result<T, String>` 与 thiserror。
 - 公开 API 与模块结构以 `src/lib.rs` 为准；内部实现在 `src/internal/`，不对外承诺稳定。
+
+## 禁止事项
+
+- 禁止使用mod.rs，当前项目采用2024 edition
+- 禁止在非测试代码中用unwarp()和exepct()，必须要做异常处理和异常导出

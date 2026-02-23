@@ -4,7 +4,7 @@ use std::future::Future;
 
 use async_trait::async_trait;
 
-use crate::remote_file::download::{DownloadHook, HookAbort};
+use crate::internal::remote_file::downloader::traits::download::{DownloadHook, HookAbort};
 
 /// 仅实现「开始前」的钩子适配器。
 pub(crate) struct BeforeStartHookAdapter<F>(pub(crate) F);

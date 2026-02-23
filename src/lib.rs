@@ -54,7 +54,6 @@ pub mod remote_file {
     pub use internal::remote_file::structs::remote_file_data::*;
     // 下载器：类型与入口（以 lib 为中心，此处统一导出）
     pub use internal::remote_file::downloader::structs::*;
-    pub use internal::remote_file::downloader::impl_traits::*;
     pub use internal::remote_file::downloader::traits::*;
 }
 

@@ -8,7 +8,6 @@ use tokio::fs::File;
 use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 use tokio::sync::Mutex;
 
-use crate::internal::remote_file::downloader::impl_traits::impl_download::DownloadError;
 use crate::internal::remote_file::downloader::structs::{
     ByteSegment, ByteSegments, DownloadConfig, DownloadHooksContainer,
     DownloadProgress, DownloadResult,
@@ -16,16 +15,77 @@ use crate::internal::remote_file::downloader::structs::{
 use crate::internal::remote_file::structs::remote_file_data::RemoteFileData;
 use crate::internal::states::unlock_reactive::UnlockReactiveProperty;
 
+use super::super::error::DownloadError;
+
 /// 每个分片的字节数上限（4MB）；实际段数 = ceil(文件大小 / CHUNK_SIZE)，由文件大小决定，与最大分片并发数无关。
 const CHUNK_SIZE: u64 = 4 * 1024 * 1024;
 
-/// 计算单个 Range 的 end（不含），并生成 `bytes=start-(end-1)`。
+/// 生成单个 Range 请求头：`bytes=start-(end-1)`，end 为不含上界。
 fn range_header(start: u64, end: u64) -> String {
     let end_inclusive = end.saturating_sub(1);
     format!("bytes={}-{}", start, end_inclusive)
 }
 
-/// 分片下载：已知 size，按 CHUNK_SIZE 切段，多任务 Range 请求并写文件。
+/// 从配置解析最大分片并发数；大于 1 才启用分片，否则默认 2。
+fn max_concurrent_from_config(config: &DownloadConfig) -> usize {
+    match config.max_concurrent_chunks.filter(|n| *n > 1) {
+        Some(n) => n,
+        None => 2,
+    }
+}
+
+/// 执行单段 Range 下载：请求、写入指定偏移、更新进度与钩子、可选写入 ByteSegment。
+async fn download_one_range(
+    client: &reqwest::Client,
+    url: &str,
+    range: &str,
+    start: u64,
+    total: u64,
+    task_file: Option<tokio::fs::File>,
+    bytes_done: Arc<AtomicU64>,
+    progress: UnlockReactiveProperty<DownloadProgress>,
+    hooks: Arc<Mutex<DownloadHooksContainer>>,
+    segments: Option<Arc<Mutex<Vec<ByteSegment>>>>,
+) -> Result<(), DownloadError> {
+    if hooks.lock().await.cancel_requested() {
+        return Err(DownloadError::Cancelled);
+    }
+
+    let resp = client.get(url).header(RANGE, range).send().await?;
+    let body = resp.bytes().await?;
+    let len = body.len() as u64;
+
+    if let Some(mut f) = task_file {
+        f.seek(std::io::SeekFrom::Start(start))
+            .await
+            .map_err(DownloadError::WriteFile)?;
+        f.write_all(&body)
+            .await
+            .map_err(DownloadError::WriteFile)?;
+    }
+
+    let current = bytes_done.fetch_add(len, Ordering::Relaxed) + len;
+
+    let _ = progress.update(DownloadProgress {
+        bytes_done: current,
+        total: Some(total),
+    });
+
+    let mut h = hooks.lock().await;
+    h.run_on_chunk(&body);
+    h.run_on_progress(current, Some(total));
+
+    if let Some(seg) = segments {
+        seg.lock().await.push(ByteSegment {
+            offset: start,
+            data: body.to_vec(),
+        });
+    }
+
+    Ok(())
+}
+
+/// 分片下载入口：已知 size，按 CHUNK_SIZE 切段，多任务 Range 请求并写文件。
 pub(crate) async fn run_chunked_download(
     client: reqwest::Client,
     file_data: RemoteFileData,
@@ -56,11 +116,7 @@ pub(crate) async fn run_chunked_download(
         total: Some(total),
     });
 
-    // 最大分片并发数：同时运行的分片任务上限；实际会 spawn 的段数由 total 与 CHUNK_SIZE 决定。
-    let max_concurrent = match config.max_concurrent_chunks.filter(|n| *n > 1) {
-        Some(n) => n,
-        None => 2,
-    };
+    let max_concurrent = max_concurrent_from_config(&config);
     let semaphore = Arc::new(tokio::sync::Semaphore::new(max_concurrent));
     let bytes_done = Arc::new(AtomicU64::new(0));
 
@@ -81,9 +137,9 @@ pub(crate) async fn run_chunked_download(
             None
         };
 
-    let mut handles = Vec::new();
     let url = file_data.absolute_path.clone();
     let mut start: u64 = 0;
+    let mut handles = Vec::new();
 
     while start < total {
         let end = (start + CHUNK_SIZE).min(total);
@@ -98,6 +154,7 @@ pub(crate) async fn run_chunked_download(
             }
             None => None,
         };
+
         let client = client.clone();
         let url = url.clone();
         let sem = Arc::clone(&semaphore);
@@ -106,7 +163,6 @@ pub(crate) async fn run_chunked_download(
         let hooks_clone = Arc::clone(&hooks);
         let segments_clone = segments_for_bytes.clone();
         let start_u64 = start;
-        let total_u64 = total;
 
         let handle = tokio::spawn(async move {
             let _permit = sem
@@ -114,48 +170,19 @@ pub(crate) async fn run_chunked_download(
                 .await
                 .map_err(|_| DownloadError::ChunkedInternal("semaphore closed".into()))?;
 
-            if hooks_clone.lock().await.cancel_requested() {
-                return Err(DownloadError::Cancelled);
-            }
-
-            let resp = client
-                .get(&url)
-                .header(RANGE, &range)
-                .send()
-                .await?;
-
-            let body = resp.bytes().await?;
-            let len = body.len() as u64;
-
-            if let Some(mut f) = task_file {
-                f.seek(std::io::SeekFrom::Start(start_u64))
-                    .await
-                    .map_err(DownloadError::WriteFile)?;
-                f.write_all(&body)
-                    .await
-                    .map_err(DownloadError::WriteFile)?;
-            }
-
-            let prev = bytes_done_clone.fetch_add(len, Ordering::Relaxed);
-            let current = prev + len;
-
-            let _ = progress_clone.update(DownloadProgress {
-                bytes_done: current,
-                total: Some(total_u64),
-            });
-
-            let mut h = hooks_clone.lock().await;
-            h.run_on_chunk(&body);
-            h.run_on_progress(current, Some(total_u64));
-
-            if let Some(seg) = segments_clone {
-                seg.lock().await.push(ByteSegment {
-                    offset: start_u64,
-                    data: body.to_vec(),
-                });
-            }
-
-            Ok(())
+            download_one_range(
+                &client,
+                &url,
+                &range,
+                start_u64,
+                total,
+                task_file,
+                bytes_done_clone,
+                progress_clone,
+                hooks_clone,
+                segments_clone,
+            )
+            .await
         });
 
         handles.push((start, handle));

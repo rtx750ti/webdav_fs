@@ -1,6 +1,6 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use crate::remote_file::download::{DownloadHook, HookAbort};
+use crate::internal::remote_file::downloader::traits::download::{DownloadHook, HookAbort};
 
 /// 钩子容器：多个钩子 + 请求取消标志。
 #[derive(Default)]
