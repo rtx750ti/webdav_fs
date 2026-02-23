@@ -1,16 +1,17 @@
-//! 单线程下载实现：下载器方法及执行逻辑。
+//! 下载实现：单线程与分片（多线程）入口及执行逻辑。
 
 use std::path::Path;
+use std::sync::Arc;
 
 use futures_util::StreamExt;
 use thiserror::Error;
 use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
+use tokio::sync::Mutex;
 
 use crate::internal::auth::structs::webdav_auth::WebdavAuth;
 use crate::internal::remote_file::downloader::structs::hook_adapters::{
-    AfterCompleteHookAdapter, BeforeStartHookAdapter, OnChunkHookAdapter,
-    OnProgressHookAdapter,
+    AfterCompleteHookAdapter, BeforeStartHookAdapter, OnProgressHookAdapter,
 };
 use crate::internal::remote_file::downloader::structs::{
     DownloadConfig, DownloadHooksContainer, DownloadProgress,
@@ -41,9 +42,16 @@ pub enum DownloadError {
     #[error("下载被取消")]
     Cancelled,
 
-    /// 多线程下载尚未实现。
-    #[error("多线程下载尚未实现")]
-    MultiThreadUnimplemented,
+    /// 分片下载需要已知文件大小。
+    #[error("分片下载需要已知文件大小")]
+    UnknownFileSizeForChunked,
+
+    /// 分片任务 join 失败。
+    #[error("分片任务失败: {0}")]
+    TaskJoin(#[from] tokio::task::JoinError),
+
+    #[error("分片下载内部错误: {0}")]
+    ChunkedInternal(String),
 
     /// 钩子在 before_start 中返回错误，中止下载。
     #[error("{0}")]
@@ -65,6 +73,12 @@ impl RemoteFileDownloader {
     /// 设置为输出字节数组，默认不输出。
     pub fn output_bytes(mut self) -> Self {
         self.config.is_output_bytes = true;
+        self
+    }
+
+    /// 设置最大分片并发数；大于 1 时启用分片下载（需远程文件有 size），最多同时请求 n 个分片。
+    pub fn max_concurrent_chunks(mut self, n: usize) -> Self {
+        self.config.max_concurrent_chunks = Some(n);
         self
     }
 
@@ -112,17 +126,26 @@ impl RemoteFileDownloader {
     }
 
     /// 执行下载。
-    /// 根据是否开启 output_bytes 与是否多线程（concurrent_chunks > 1）分支：单线程返回 Saved 或 Bytes；多线程暂返回错误，后续实现后返回 BytesSegments。
+    /// 单线程：返回 Saved 或 Bytes；分片（max_concurrent_chunks > 1）需已知 size，返回 Saved 或 BytesSegments。
     pub async fn send(self) -> Result<DownloadResult, DownloadError> {
-        // 判断是否多线程下载，如果concurrent_chunks > 1，则返回错误，后续实现后返回 BytesSegments。
-        let is_multi = self
-            .config
-            .concurrent_chunks
-            .map(|n| n > 1)
-            .unwrap_or(false);
+        let is_multi = match self.config.max_concurrent_chunks {
+            Some(n) => n > 1,
+            None => false,
+        };
 
         if is_multi {
-            return Err(DownloadError::MultiThreadUnimplemented);
+            if self.file_data.size.is_none() {
+                return Err(DownloadError::UnknownFileSizeForChunked);
+            }
+            let hooks = Arc::new(Mutex::new(self.hooks));
+            return super::chunked_download::run_chunked_download(
+                self.client,
+                self.file_data,
+                self.config,
+                hooks,
+                self.progress_state,
+            )
+            .await;
         }
 
         run_single_thread_download(

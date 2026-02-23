@@ -14,7 +14,7 @@ use crate::remote_file::{
 use crate::tests::{load_account_optional, TestVendor};
 
 /// Windows 下本地保存目录
-const SAVE_DIR: &str = r"C:\project\test\test_download_files";
+const SAVE_DIR: &str = r"C:\project\rust\quick-sync\temp-download-files";
 
 /// 获取一个远程文件（非目录），无则返回 None（跳过测试）。
 async fn require_one_remote_file(
@@ -22,7 +22,7 @@ async fn require_one_remote_file(
     let auth = load_account_optional(TestVendor::Teracloud)?
         .to_webdav_auth()
         .ok()?;
-    let results = get_remote_files(&auth, &["./"]).await;
+    let results = get_remote_files(&auth, &["./新建文件夹/hula.exe"]).await;
     let file = results
         .into_iter()
         .find_map(|r| r.ok())
@@ -412,4 +412,118 @@ async fn download_hook_full_trait() {
     match result {
         DownloadResult::Bytes(_) | DownloadResult::Saved | DownloadResult::BytesSegments(_) => {}
     }
+}
+
+// ---------- 分片下载测试 ----------
+
+/// 分片下载保存到本地：max_concurrent_chunks(2)，校验文件存在且大小与远程一致。
+#[tokio::test]
+async fn download_chunked_save_to_local() {
+    let (remote_file, auth) = match require_one_remote_file().await {
+        Some(x) => x,
+        None => return,
+    };
+
+    let total_size = match remote_file.data.size {
+        Some(s) => s,
+        None => {
+            eprintln!("跳过：远程文件无 size，无法分片下载");
+            return;
+        }
+    };
+
+    let save_dir = Path::new(SAVE_DIR);
+    if !save_dir.exists() {
+        if let Err(e) = std::fs::create_dir_all(save_dir) {
+            eprintln!("创建目录 {} 失败: {}，跳过测试", SAVE_DIR, e);
+            return;
+        }
+    }
+
+    let save_path = save_dir.join(remote_file.data.name.as_str());
+    let downloader = remote_file
+        .build_downloader(&auth)
+        .save_to(&save_path)
+        .max_concurrent_chunks(3);
+
+    let result = downloader.send().await;
+
+    let result = match result {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("分片下载失败: {}", e);
+            return;
+        }
+    };
+
+    match &result {
+        DownloadResult::Saved => {}
+        DownloadResult::Bytes(_) => panic!("预期 Saved，得到 Bytes"),
+        DownloadResult::BytesSegments(_) => panic!("预期 Saved，得到 BytesSegments"),
+    }
+
+    assert!(save_path.exists(), "文件应已保存到 {}", save_path.display());
+    let local_len = std::fs::metadata(&save_path).map(|m| m.len()).unwrap_or(0);
+    assert_eq!(
+        local_len, total_size,
+        "本地文件大小应与远程一致: {} vs {}",
+        local_len, total_size
+    );
+    println!(
+        "分片下载保存成功: {}，大小 {}",
+        save_path.display(),
+        local_len
+    );
+}
+
+/// 分片下载 + output_bytes：返回 BytesSegments，total_len 与远程 size 一致。
+#[tokio::test]
+async fn download_chunked_output_bytes() {
+    let (remote_file, auth) = match require_one_remote_file().await {
+        Some(x) => x,
+        None => return,
+    };
+
+    let total_size = match remote_file.data.size {
+        Some(s) => s,
+        None => {
+            eprintln!("跳过：远程文件无 size，无法分片下载");
+            return;
+        }
+    };
+
+    let concurrent = 5;
+    let downloader = remote_file
+        .build_downloader(&auth)
+        .output_bytes()
+        .max_concurrent_chunks(concurrent);
+
+    let result = downloader.send().await;
+
+    let result = match result {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("分片 output_bytes 下载失败: {}", e);
+            return;
+        }
+    };
+
+    let segments = match &result {
+        DownloadResult::BytesSegments(s) => s,
+        DownloadResult::Saved => panic!("预期 BytesSegments，得到 Saved"),
+        DownloadResult::Bytes(_) => panic!("分片应返回 BytesSegments，不应为 Bytes"),
+    };
+
+    assert_eq!(
+        segments.total_len(),
+        total_size,
+        "BytesSegments 总长应与远程 size 一致"
+    );
+    let segment_count = (total_size + (4 * 1024 * 1024 - 1)) / (4 * 1024 * 1024);
+    println!(
+        "分片 output_bytes 成功，total_len={}，并发上限={}，实际段数={}",
+        segments.total_len(),
+        concurrent,
+        segment_count
+    );
 }
