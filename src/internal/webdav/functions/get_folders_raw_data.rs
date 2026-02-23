@@ -1,10 +1,9 @@
 use quick_xml::de::from_str;
 use reqwest::header::{HeaderMap, HeaderValue, CONTENT_TYPE};
-use reqwest::Client;
 
 use crate::auth::structs::webdav_auth::WebdavAuth;
 use crate::internal::webdav::enums::{Depth, WebDavMethod};
-use crate::internal::webdav::raw_file_xml::MultiStatus;
+use crate::webdav::structs::MultiStatus;
 
 /// 内部使用的PROPFIND请求体
 const _PROPFIND_BODY: &str = r#"<?xml version="1.0" encoding="utf-8" ?>

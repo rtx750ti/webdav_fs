@@ -14,7 +14,7 @@ pub mod auth {
 pub mod webdav {
     pub mod functions {
         use crate::internal;
-        pub use internal::webdav::functions::*;
+        pub use internal::webdav::functions::get_folders_raw_data::*;
     }
 
     pub mod enums {
@@ -22,7 +22,13 @@ pub mod webdav {
         pub use internal::webdav::enums::*;
     }
 
-    pub use crate::internal::webdav::raw_file_xml::*;
+    pub mod traits {
+        pub use crate::internal::webdav::raw_xml::impl_multi_status::*;
+    }
+
+    pub mod structs {
+        pub use crate::internal::webdav::raw_xml::raw_file::*;
+    }
 }
 
 pub mod states {
@@ -39,7 +45,10 @@ pub mod states {
 
 pub mod remote_file {
     use crate::internal;
-    pub use internal::remote_file::*;
+    // 导出结构体模型
+    pub use internal::remote_file::structs::remote_file::*;
+    pub use internal::remote_file::structs::remote_file_data::*;
+    // 导出公用函数
 }
 
 pub mod local_file {
