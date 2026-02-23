@@ -33,7 +33,7 @@ fn format_url_path(
 
 type WebDavTaskResult = Vec<Result<MultiStatus, String>>;
 
-/// 读取远程文件，并生成领域结构体模型
+/// 读取远程文件，并转换成领域结构体模型
 ///
 /// 支持文件夹和文件混合读取，不会做递归处理，所以需要递归请自行处理
 ///

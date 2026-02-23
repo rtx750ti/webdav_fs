@@ -1,0 +1,12 @@
+---
+description: 代码风格与错误、文档约定
+globs: "src/**/*.rs"
+alwaysApply: false
+---
+
+# 代码风格
+
+- **文档与注释**：使用中文；公开函数/类型需有 `///` doc comment，复杂逻辑可加 `//` 说明。
+- **错误类型**：简单场景用 `Result<T, String>`，错误信息为可读字符串；库内部分使用 thiserror。
+- **WebDAV 相关**：URL 与 `base_url` 拼接后需做校验（同源、路径前缀）；相对路径不建议以 `/` 开头。
+- **依赖**：HTTP 用 reqwest（http1_only），异步用 tokio；不随意新增未在 Cargo.toml 中声明的依赖。

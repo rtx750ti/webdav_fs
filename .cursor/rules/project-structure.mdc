@@ -1,0 +1,12 @@
+---
+description: 模块与公开 API 结构约定
+globs: "src/**/*.rs"
+alwaysApply: false
+---
+
+# 项目结构约定
+
+- **对外 API** 仅通过 `src/lib.rs` 的 `pub use` 与 `pub mod` 暴露；不要将 `internal` 或其子路径作为公开 API 文档中的类型路径（对外文档用 `webdav_fs::*`）。
+- **内部实现** 放在 `src/internal/` 下；新增内部模块时在 `internal.rs` 或对应父模块中 `pub mod xxx`。
+- **入口**：`internal::entrance::lcoal`（本地）、`internal::entrance::remote`（远程）；对外使用入口时引用 `webdav_fs` 的 re-export。
+- 已知拼写：入口模块名为 `lcoal`（文件 `lcoal.rs`），与 “local” 同义；重命名需同步改模块名、文件名及所有引用。

@@ -1,0 +1,11 @@
+---
+description: 测试与 doctest 约定
+globs: "src/tests/**/*.rs"
+alwaysApply: false
+---
+
+# 测试约定
+
+- 异步测试使用 `#[tokio::test]`；需要环境变量时可用 `dotenvy`。
+- 集成测试放在 `src/tests/`；引用内部实现时使用 `crate::internal::*` 或已公开的 `webdav_fs::*`。
+- 修改入口或 WebDAV 行为后运行 `cargo test` 确保通过；`lib.rs` 中 `doctest = false`，无需保证 doc example 可运行（若启用需同步维护）。
