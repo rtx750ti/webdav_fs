@@ -61,7 +61,7 @@ pub async fn get_remote_files(
     let tasks = relative_urls.iter().map(|path| async move {
         let url = format_url_path(webdav_auth, path)?;
         let folders_raw_data =
-            get_folders_raw_data(webdav_auth, &url, &Depth::Zero).await?;
+            get_folders_raw_data(webdav_auth, &url, &Depth::One).await?;
 
         Ok(folders_raw_data)
     });

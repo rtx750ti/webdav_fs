@@ -1,15 +1,17 @@
-use crate::internal::entrance::remote::get_remote_files;
-use crate::tests::{load_account_optional, TestVendor};
+use crate::{
+    get_remote_files,
+    tests::{load_account_optional, TestVendor},
+};
 
 #[tokio::test]
 async fn get_remote_files_test() {
-    let account = match load_account_optional(TestVendor::Jianguoyun) {
-        Some(a) => a,
-        None => return,
-    };
-    let auth = match account.to_webdav_auth() {
-        Ok(a) => a,
-        Err(_) => return,
-    };
-    let _ = get_remote_files(&auth, &[""]).await;
+    let auth = load_account_optional(TestVendor::Teracloud)
+        .unwrap()
+        .to_webdav_auth()
+        .unwrap();
+    let data = get_remote_files(&auth, &["./"]).await;
+    for d in data {
+        let remote_file = d.unwrap();
+        println!("remote_file: {:?}", remote_file);
+    }
 }
