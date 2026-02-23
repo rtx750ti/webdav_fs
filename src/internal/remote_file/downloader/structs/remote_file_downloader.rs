@@ -16,7 +16,9 @@ use crate::internal::auth::structs::webdav_auth::WebdavAuth;
 use crate::internal::remote_file::structs::remote_file_data::RemoteFileData;
 use crate::internal::remote_file::structs::remote_file::RemoteFile;
 use crate::internal::states::unlock_reactive::UnlockReactiveProperty;
-use crate::remote_file::remote_file_downloader::chunked_download::run_chunked_download;
+use crate::remote_file::remote_file_downloader::chunked_download::{
+    run_chunked_download, RunChunkedDownloadParams,
+};
 
 use super::download_config::DownloadConfig;
 use super::download_hooks_container::DownloadHooksContainer;
@@ -144,18 +146,18 @@ impl RemoteFileDownloader {
                 return Err(DownloadError::UnknownFileSizeForChunked);
             }
             let hooks = Arc::new(Mutex::new(self.hooks));
-            return run_chunked_download(
-                self.client,
-                self.file_data,
-                self.config,
+            return run_chunked_download(RunChunkedDownloadParams {
+                client: self.client,
+                file_data: self.file_data,
+                config: self.config,
                 hooks,
-                self.progress_state,
-            )
+                progress: self.progress_state,
+            })
             .await;
         }
 
         run_single_thread_download(
-            self.client,
+            &self.client,
             self.file_data,
             self.config,
             self.hooks,

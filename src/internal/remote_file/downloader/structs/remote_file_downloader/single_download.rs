@@ -15,7 +15,7 @@ use super::error::DownloadError;
 
 /// 单线程下载：整文件 GET，流式写入并更新进度。
 pub(super) async fn run_single_thread_download(
-    client: reqwest::Client,
+    client: &reqwest::Client,
     file_data: RemoteFileData,
     config: DownloadConfig,
     mut hooks: DownloadHooksContainer,

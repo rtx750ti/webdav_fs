@@ -162,6 +162,73 @@ async fn download_save_to_local_with_progress_watch() {
     }
 }
 
+/// 测试：分片下载时监听整体进度并打印（验证多段 Range 并发下 progress 聚合正确）。
+#[tokio::test]
+async fn download_chunked_save_to_local_with_progress_watch() {
+    let (remote_file, auth) = match require_one_remote_file().await {
+        Some(x) => x,
+        None => return,
+    };
+
+    let save_dir = Path::new(SAVE_DIR);
+    if !save_dir.exists() {
+        if let Err(e) = std::fs::create_dir_all(save_dir) {
+            eprintln!("创建目录 {} 失败: {}，跳过测试", SAVE_DIR, e);
+            return;
+        }
+    }
+
+    let save_path = save_dir.join(remote_file.data.name.as_str());
+    let downloader = remote_file
+        .build_downloader(&auth)
+        .save_to(&save_path)
+        .max_concurrent_chunks(2);
+    let progress = downloader.progress();
+    let progress_final = progress.clone();
+
+    let watch_handle = tokio::spawn(async move {
+        let mut watcher = progress.watch();
+        while let Ok(p) = watcher.changed().await {
+            println!(
+                "[分片下载] 已下载 {} / {:?}，整体进度 {:.1}%",
+                p.bytes_done,
+                p.total,
+                p.pct()
+            );
+        }
+    });
+
+    let result = downloader.send().await;
+
+    watch_handle.abort();
+    let _ = watch_handle.await;
+
+    let result = match result {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("下载失败: {}", e);
+            return;
+        }
+    };
+
+    match result {
+        DownloadResult::Saved => {}
+        DownloadResult::Bytes(_) => panic!("预期为 Saved"),
+        DownloadResult::BytesSegments(_) => panic!("预期为 Saved，得到 BytesSegments"),
+    }
+
+    assert!(save_path.exists(), "文件应已保存到 {}", save_path.display());
+
+    if let Some(p) = progress_final.get_current().as_ref() {
+        println!(
+            "[分片下载] 最终: bytes_done={}, total={:?}, 整体进度 {:.1}%",
+            p.bytes_done,
+            p.total,
+            p.pct()
+        );
+    }
+}
+
 // ---------- 钩子测试：每个钩子一个独立测试 ----------
 
 /// 测试 `with_before_start_hook`：开始前钩子被调用且下载可正常完成。
