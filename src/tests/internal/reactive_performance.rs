@@ -1,7 +1,7 @@
 //! 响应式属性性能基准测试
 //!
 //! 测试 UnlockReactiveProperty 和 LockReactiveProperty 在高并发场景下的性能表现。
-//! 
+//!
 //! 测试指标：
 //! - 更新吞吐量（次/秒）
 //! - 事件吞吐量（事件/秒）
@@ -13,13 +13,19 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::sync::Barrier;
 use tokio::time::Instant;
 
-use crate::remote_file::DownloadProgress;
-use crate::states::unlock_reactive::UnlockReactiveProperty;
 use crate::states::lock_reactive::LockReactiveProperty;
+use crate::states::unlock_reactive::UnlockReactiveProperty;
 
 // 性能测试配置（两个测试使用相同参数）
-const PERF_WATCHER_COUNT: usize = 100_0000;   // 监听器数量
-const PERF_UPDATE_COUNT: usize = 1_000;     // 更新次数
+const PERF_WATCHER_COUNT: usize = 100_0000; // 监听器数量
+const PERF_UPDATE_COUNT: usize = 1_000; // 更新次数
+
+/// 测试用的进度结构体（独立于下载器模块）
+#[derive(Debug, Clone, Copy)]
+struct TestProgress {
+    bytes_done: u64,
+    total: Option<u64>,
+}
 
 /// UnlockReactiveProperty（无锁）性能基准测试：模拟大量监听器并发监听进度更新。
 ///
@@ -37,19 +43,23 @@ async fn unlock_reactive_property_performance_benchmark() {
     let watcher_count = PERF_WATCHER_COUNT;
     let update_count = PERF_UPDATE_COUNT;
 
-    println!("\n========== UnlockReactiveProperty 性能基准测试 ==========");
+    println!(
+        "\n========== UnlockReactiveProperty 性能基准测试 =========="
+    );
     println!("测试配置:");
     println!("  - 监听器数量: {}", watcher_count);
     println!("  - 更新次数: {}", update_count);
     println!("  - Tokio Runtime: current_thread");
     println!("  - 属性类型: UnlockReactiveProperty (无锁)");
-    println!("=========================================================\n");
+    println!(
+        "=========================================================\n"
+    );
 
     // 记录初始内存
     let mem_before = memory_stats::memory_stats().map(|s| s.physical_mem);
 
     // 创建响应式进度属性
-    let progress = UnlockReactiveProperty::new(DownloadProgress {
+    let progress = UnlockReactiveProperty::new(TestProgress {
         bytes_done: 0,
         total: Some(update_count as u64),
     });
@@ -76,16 +86,22 @@ async fn unlock_reactive_property_performance_benchmark() {
             barrier.wait().await;
 
             // 获取初始值
-            let mut last = watcher.borrow()
-                .map(|p| p.bytes_done)
-                .unwrap_or(0);
+            let mut last =
+                watcher.borrow().map(|p| p.bytes_done).unwrap_or(0);
             let mut events_count = 0usize;
 
             // 监听所有更新
             loop {
-                let p = watcher.changed().await
-                    .map_err(|e| format!("监听器 {} 接收失败: {}", watcher_id, e))?;
-                
+                // 等待变化通知
+                watcher.changed().await.map_err(|e| {
+                    format!("监听器 {} 接收失败: {}", watcher_id, e)
+                })?;
+
+                // 获取最新值
+                let p = watcher.borrow().ok_or_else(|| {
+                    format!("监听器 {} 无法获取值", watcher_id)
+                })?;
+
                 events_count += 1;
 
                 // 验证单调递增
@@ -102,7 +118,7 @@ async fn unlock_reactive_property_performance_benchmark() {
                     break;
                 }
             }
-            
+
             total_events.fetch_add(events_count, Ordering::SeqCst);
             Ok::<(), String>(())
         }));
@@ -121,7 +137,7 @@ async fn unlock_reactive_property_performance_benchmark() {
     // 执行更新并计时
     let start = Instant::now();
     for v in 1..=update_count {
-        let _ = progress.update(DownloadProgress {
+        let _ = progress.update(TestProgress {
             bytes_done: v as u64,
             total: Some(update_count as u64),
         });
@@ -135,20 +151,11 @@ async fn unlock_reactive_property_performance_benchmark() {
 
     // 等待所有监听器完成（最多 10 秒）
     for (idx, handle) in handles.into_iter().enumerate() {
-        tokio::time::timeout(
-            tokio::time::Duration::from_secs(10),
-            handle
-        )
-        .await
-        .unwrap_or_else(|_| {
-            panic!("监听器 {} 等待超时（10秒）", idx)
-        })
-        .unwrap_or_else(|e| {
-            panic!("监听器 {} 任务失败: {}", idx, e)
-        })
-        .unwrap_or_else(|e| {
-            panic!("监听器 {} 逻辑错误: {}", idx, e)
-        });
+        tokio::time::timeout(tokio::time::Duration::from_secs(10), handle)
+            .await
+            .unwrap_or_else(|_| panic!("监听器 {} 等待超时（10秒）", idx))
+            .unwrap_or_else(|e| panic!("监听器 {} 任务失败: {}", idx, e))
+            .unwrap_or_else(|e| panic!("监听器 {} 逻辑错误: {}", idx, e));
     }
 
     let total_duration = start.elapsed();
@@ -157,10 +164,13 @@ async fn unlock_reactive_property_performance_benchmark() {
     let mem_after = memory_stats::memory_stats().map(|s| s.physical_mem);
 
     // 计算性能指标
-    let updates_per_sec = (update_count as f64) / update_duration.as_secs_f64();
+    let updates_per_sec =
+        (update_count as f64) / update_duration.as_secs_f64();
     let total_events = total_events_received.load(Ordering::SeqCst);
-    let events_per_sec = (total_events as f64) / total_duration.as_secs_f64();
-    let avg_latency_per_update = total_duration.as_micros() / (update_count as u128);
+    let events_per_sec =
+        (total_events as f64) / total_duration.as_secs_f64();
+    let avg_latency_per_update =
+        total_duration.as_micros() / (update_count as u128);
     let mem_used = match (mem_before, mem_after) {
         (Some(before), Some(after)) => Some(after.saturating_sub(before)),
         _ => None,
@@ -173,16 +183,26 @@ async fn unlock_reactive_property_performance_benchmark() {
     println!("  - 吞吐量: {:.0} 次更新/秒", updates_per_sec);
     println!("\n收敛阶段:");
     println!("  - 总耗时: {:.2?}", total_duration);
-    println!("  - 总事件数: {} ({}个监听器 × {}次更新)", total_events, watcher_count, update_count);
+    println!(
+        "  - 总事件数: {} ({}个监听器 × {}次更新)",
+        total_events, watcher_count, update_count
+    );
     println!("  - 事件吞吐量: {:.0} 事件/秒", events_per_sec);
     println!("  - 平均延迟: {:.2}µs/次更新", avg_latency_per_update);
-    
+
     if let Some(mem) = mem_used {
         println!("\n内存使用:");
-        println!("  - 增量: {} bytes ({:.2} MB)", mem, mem as f64 / 1024.0 / 1024.0);
-        println!("  - 每监听器: {:.2} bytes", mem as f64 / watcher_count as f64);
+        println!(
+            "  - 增量: {} bytes ({:.2} MB)",
+            mem,
+            mem as f64 / 1024.0 / 1024.0
+        );
+        println!(
+            "  - 每监听器: {:.2} bytes",
+            mem as f64 / watcher_count as f64
+        );
     }
-    
+
     println!("====================================\n");
 
     // 性能断言：全量收敛应在 10 秒内完成
@@ -195,7 +215,10 @@ async fn unlock_reactive_property_performance_benchmark() {
     // 验证所有监听器都收到了最终值（watch channel 会跳过中间值，这是正常的）
     // 不验证总事件数，因为 watch 的语义是"最新状态"而非"消息队列"
     println!("✓ 性能测试通过！");
-    println!("注: watch channel 会跳过中间值，实际接收 {} 事件（正常现象）", total_events);
+    println!(
+        "注: watch channel 会跳过中间值，实际接收 {} 事件（正常现象）",
+        total_events
+    );
 }
 
 /// LockReactiveProperty（有锁）性能基准测试：模拟大量监听器并发监听进度更新。
@@ -222,13 +245,15 @@ async fn lock_reactive_property_performance_benchmark() {
     println!("  - 更新次数: {}", update_count);
     println!("  - Tokio Runtime: current_thread");
     println!("  - 属性类型: LockReactiveProperty (有锁)");
-    println!("=========================================================\n");
+    println!(
+        "=========================================================\n"
+    );
 
     // 记录初始内存
     let mem_before = memory_stats::memory_stats().map(|s| s.physical_mem);
 
     // 创建响应式进度属性
-    let progress = LockReactiveProperty::new(DownloadProgress {
+    let progress = LockReactiveProperty::new(TestProgress {
         bytes_done: 0,
         total: Some(update_count as u64),
     });
@@ -273,7 +298,8 @@ async fn lock_reactive_property_performance_benchmark() {
                 }
 
                 // 短暂休眠，避免过度轮询
-                tokio::time::sleep(tokio::time::Duration::from_micros(10)).await;
+                tokio::time::sleep(tokio::time::Duration::from_micros(10))
+                    .await;
             }
 
             total_events.fetch_add(events_count, Ordering::SeqCst);
@@ -294,10 +320,12 @@ async fn lock_reactive_property_performance_benchmark() {
     // 执行更新并计时
     let start = Instant::now();
     for v in 1..=update_count {
-        let _ = progress.update(DownloadProgress {
-            bytes_done: v as u64,
-            total: Some(update_count as u64),
-        }).await;
+        let _ = progress
+            .update(TestProgress {
+                bytes_done: v as u64,
+                total: Some(update_count as u64),
+            })
+            .await;
 
         // 定期让出 CPU，避免饿死监听器
         if v % 10 == 0 {
@@ -308,20 +336,11 @@ async fn lock_reactive_property_performance_benchmark() {
 
     // 等待所有监听器完成（最多 30 秒）
     for (idx, handle) in handles.into_iter().enumerate() {
-        tokio::time::timeout(
-            tokio::time::Duration::from_secs(30),
-            handle
-        )
-        .await
-        .unwrap_or_else(|_| {
-            panic!("监听器 {} 等待超时（30秒）", idx)
-        })
-        .unwrap_or_else(|e| {
-            panic!("监听器 {} 任务失败: {}", idx, e)
-        })
-        .unwrap_or_else(|e| {
-            panic!("监听器 {} 逻辑错误: {}", idx, e)
-        });
+        tokio::time::timeout(tokio::time::Duration::from_secs(30), handle)
+            .await
+            .unwrap_or_else(|_| panic!("监听器 {} 等待超时（30秒）", idx))
+            .unwrap_or_else(|e| panic!("监听器 {} 任务失败: {}", idx, e))
+            .unwrap_or_else(|e| panic!("监听器 {} 逻辑错误: {}", idx, e));
     }
 
     let total_duration = start.elapsed();
@@ -330,10 +349,13 @@ async fn lock_reactive_property_performance_benchmark() {
     let mem_after = memory_stats::memory_stats().map(|s| s.physical_mem);
 
     // 计算性能指标
-    let updates_per_sec = (update_count as f64) / update_duration.as_secs_f64();
+    let updates_per_sec =
+        (update_count as f64) / update_duration.as_secs_f64();
     let total_events = total_events_received.load(Ordering::SeqCst);
-    let events_per_sec = (total_events as f64) / total_duration.as_secs_f64();
-    let avg_latency_per_update = total_duration.as_micros() / (update_count as u128);
+    let events_per_sec =
+        (total_events as f64) / total_duration.as_secs_f64();
+    let avg_latency_per_update =
+        total_duration.as_micros() / (update_count as u128);
     let mem_used = match (mem_before, mem_after) {
         (Some(before), Some(after)) => Some(after.saturating_sub(before)),
         _ => None,
@@ -346,14 +368,24 @@ async fn lock_reactive_property_performance_benchmark() {
     println!("  - 吞吐量: {:.0} 次更新/秒", updates_per_sec);
     println!("\n收敛阶段:");
     println!("  - 总耗时: {:.2?}", total_duration);
-    println!("  - 总事件数: {} ({}个监听器轮询)", total_events, watcher_count);
+    println!(
+        "  - 总事件数: {} ({}个监听器轮询)",
+        total_events, watcher_count
+    );
     println!("  - 事件吞吐量: {:.0} 事件/秒", events_per_sec);
     println!("  - 平均延迟: {:.2}µs/次更新", avg_latency_per_update);
 
     if let Some(mem) = mem_used {
         println!("\n内存使用:");
-        println!("  - 增量: {} bytes ({:.2} MB)", mem, mem as f64 / 1024.0 / 1024.0);
-        println!("  - 每监听器: {:.2} bytes", mem as f64 / watcher_count as f64);
+        println!(
+            "  - 增量: {} bytes ({:.2} MB)",
+            mem,
+            mem as f64 / 1024.0 / 1024.0
+        );
+        println!(
+            "  - 每监听器: {:.2} bytes",
+            mem as f64 / watcher_count as f64
+        );
     }
 
     println!("====================================\n");
@@ -366,6 +398,7 @@ async fn lock_reactive_property_performance_benchmark() {
     );
 
     println!("✓ 性能测试通过！");
-    println!("注: LockReactiveProperty 使用 Mutex + Notify，本测试使用轮询方式避免 wait_until 的并发问题");
+    println!(
+        "注: LockReactiveProperty 使用 Mutex + Notify，本测试使用轮询方式避免 wait_until 的并发问题"
+    );
 }
-
