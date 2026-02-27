@@ -1,6 +1,60 @@
 //! 远程文件下载器
 //!
-//! 拥有响应式属性（通过 `progress()` 获取）：记录已下载大小（`bytes_done`），总大小（`total`）来自远程文件数据。
+//! 本模块实现了 WebDAV 远程文件的下载功能，支持单线程和分片并发两种下载模式。
+//!
+//! ## 功能特性
+//!
+//! - **单线程下载**：适用于小文件或不支持 Range 请求的服务器，整文件流式下载
+//! - **分片并发下载**：适用于大文件，通过 HTTP Range 请求将文件分段并发下载，提升速度
+//! - **断点续传**：分片下载支持从已下载位置继续（需文件已存在且部分完成）
+//! - **响应式进度**：通过 `progress()` 获取可监听的下载进度状态
+//! - **钩子机制**：支持在下载各阶段插入自定义逻辑（开始前、进度更新、完成后等）
+//! - **灵活输出**：可保存到本地文件、输出字节数组，或两者同时进行
+//!
+//! ## 使用示例
+//!
+//! ```rust,no_run
+//! # use webdav_fs::remote_file::RemoteFile;
+//! # use webdav_fs::auth::WebdavAuth;
+//! # async fn example(remote_file: RemoteFile, auth: WebdavAuth) -> Result<(), Box<dyn std::error::Error>> {
+//! // 单线程下载到本地
+//! let result = remote_file
+//!     .build_downloader(&auth)
+//!     .save_to("local_file.txt")
+//!     .send()
+//!     .await?;
+//!
+//! // 分片并发下载（最多 4 个分片同时请求）
+//! let result = remote_file
+//!     .build_downloader(&auth)
+//!     .save_to("large_file.zip")
+//!     .max_concurrent_chunks(4)
+//!     .send()
+//!     .await?;
+//!
+//! // 下载到内存（返回字节数组）
+//! let result = remote_file
+//!     .build_downloader(&auth)
+//!     .output_bytes()
+//!     .send()
+//!     .await?;
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! ## 下载模式选择
+//!
+//! - **单线程**：`max_concurrent_chunks` 未设置或为 `Some(1)` 时，执行整文件 GET 请求
+//! - **分片下载**：`max_concurrent_chunks` 设置为 `Some(n)` 且 `n > 1` 时启用
+//!   - 要求远程文件必须有已知的 `size`（否则返回 `UnknownFileSizeForChunked` 错误）
+//!   - 每个分片固定为 4MB（见 `CHUNK_SIZE`），实际分片数由文件大小决定
+//!   - `max_concurrent_chunks` 控制同时进行的分片请求数上限，而非总分片数
+//!
+//! ## 内部实现说明
+//!
+//! - `chunked_download` 子模块：分片下载的完整实现，包括续传、任务调度、进度聚合
+//! - `single_download` 子模块：单线程流式下载实现
+//! - `error` 子模块：下载相关错误类型定义
 
 mod chunked_download;
 mod error;

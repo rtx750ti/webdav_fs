@@ -36,6 +36,11 @@ pub mod webdav {
 }
 
 pub mod states {
+    pub mod reactive_core {
+        use crate::internal;
+        pub use internal::states::reactive_core::*;
+    }
+
     pub mod lock_reactive {
         use crate::internal;
         pub use internal::states::lock_reactive::*;
