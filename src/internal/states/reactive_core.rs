@@ -205,6 +205,11 @@ impl<T> PropertyWatcher<T>
 where
     T: Clone + Send + Sync,
 {
+    /// 创建一个新的监听器（供内部使用）
+    pub(crate) fn new(receiver: watch::Receiver<Option<T>>, inner: Arc<Inner<T>>) -> Self {
+        Self { receiver, inner }
+    }
+
     /// 异步等待属性值的变化，返回新值。
     pub async fn changed(&mut self) -> Result<T, ReactivePropertyError> {
         self.receiver.changed().await?;

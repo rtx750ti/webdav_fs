@@ -41,20 +41,26 @@
 //! ```
 
 use std::sync::Arc;
-use tokio::sync::{Mutex, Notify};
+use std::sync::atomic::AtomicBool;
+use tokio::sync::{Mutex, Notify, watch};
+
+use crate::states::reactive_core::{Inner as CoreInner, PropertyWatcher};
 
 use super::reactive_core::ReactivePropertyError;
 
+#[derive(Debug)]
 struct Inner<T> {
     value: Mutex<Option<T>>,
     notify: Notify,
+    sender: watch::Sender<Option<T>>,
+    is_dropped: AtomicBool,
 }
 
 /// 带条件等待能力的响应式属性容器。
 ///
 /// 使用 `tokio::sync::Mutex` 保护值，`tokio::sync::Notify` 进行通知，
 /// 保证高并发环境下 `wait_until` 不会错过任何满足条件的状态。
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct LockReactiveProperty<T: Clone + Send + Sync> {
     inner: Arc<Inner<T>>,
 }
@@ -65,12 +71,26 @@ where
 {
     /// 创建一个新的带条件等待能力的响应式属性。
     pub fn new(value: T) -> Self {
+        let (sender, _) = watch::channel(Some(value.clone()));
+
         Self {
             inner: Arc::new(Inner {
                 value: Mutex::new(Some(value)),
                 notify: Notify::new(),
+                sender,
+                is_dropped: AtomicBool::new(false),
             }),
         }
+    }
+
+    pub fn watch(&self) -> PropertyWatcher<T> {
+        PropertyWatcher::new(
+            self.inner.sender.subscribe(),
+            Arc::new(CoreInner {
+                sender: self.inner.sender.clone(),
+                is_dropped: AtomicBool::new(false),
+            }),
+        )
     }
 
     /// 更新属性值并通知所有等待者。
@@ -78,13 +98,20 @@ where
     /// # 返回值
     /// - `Ok(())`: 更新成功。
     /// - `Err(ReactivePropertyError::Destroyed)`: 属性已被销毁。
-    pub async fn update(&self, new_value: T) -> Result<(), ReactivePropertyError> {
+    pub async fn update(
+        &self,
+        new_value: T,
+    ) -> Result<(), ReactivePropertyError> {
         let mut guard = self.inner.value.lock().await;
         if guard.is_none() {
             return Err(ReactivePropertyError::Destroyed);
         }
-        *guard = Some(new_value);
+        *guard = Some(new_value.clone());
         drop(guard);
+
+        // 同时更新 watch channel
+        let _ = self.inner.sender.send(Some(new_value));
+
         self.inner.notify.notify_waiters();
         Ok(())
     }
@@ -96,10 +123,7 @@ where
     /// - `Err(ReactivePropertyError::Destroyed)`: 属性已被销毁。
     pub async fn get_current(&self) -> Result<T, ReactivePropertyError> {
         let guard = self.inner.value.lock().await;
-        guard
-            .as_ref()
-            .cloned()
-            .ok_or(ReactivePropertyError::Destroyed)
+        guard.as_ref().cloned().ok_or(ReactivePropertyError::Destroyed)
     }
 
     /// 尝试非阻塞地更新属性值。
@@ -133,14 +157,21 @@ where
     /// }
     /// # }
     /// ```
-    pub fn try_update(&self, new_value: T) -> Result<bool, ReactivePropertyError> {
+    pub fn try_update(
+        &self,
+        new_value: T,
+    ) -> Result<bool, ReactivePropertyError> {
         match self.inner.value.try_lock() {
             Ok(mut guard) => {
                 if guard.is_none() {
                     return Err(ReactivePropertyError::Destroyed);
                 }
-                *guard = Some(new_value);
+                *guard = Some(new_value.clone());
                 drop(guard);
+
+                // 同时更新 watch channel
+                let _ = self.inner.sender.send(Some(new_value));
+
                 self.inner.notify.notify_waiters();
                 Ok(true)
             }

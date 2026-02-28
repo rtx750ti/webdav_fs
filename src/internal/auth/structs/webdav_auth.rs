@@ -1,5 +1,5 @@
 use core::fmt;
-use std::rc::Rc;
+use std::sync::Arc;
 
 use base64::Engine;
 use reqwest::{
@@ -10,17 +10,18 @@ use sha2::{Digest, Sha256};
 use url::Url;
 
 /// 认证结构体
-/// 
+///
 /// 该结构体定位
 /// - 用于存储基础WebDav认证信息
 /// - 用于RemoteFile和LocalFile的网络访问功能支持
-/// 
+/// - 支持跨线程传递（所有字段都是 Send + Sync）
+///
 /// 默认Eq时会匹配base_url和token，如果需要单独比较token，需使用eq_only_token方法
 #[derive(Clone)]
 pub struct WebdavAuth {
-    pub client: Client,    // 内部是Arc，不需要特殊处理
-    pub base_url: Rc<Url>, // Rc避免深拷贝，不需要用Arc，一般也没人会改它
-    pub(crate) encrypted_token: Rc<String>, // 对外导出时，不允许直接访问，哪怕它是被加密的
+    pub client: Client,      // 内部是Arc，不需要特殊处理
+    pub base_url: Arc<Url>,  // 改用 Arc 以支持线程安全传递
+    pub(crate) encrypted_token: Arc<String>, // 改用 Arc 以支持线程安全传递
 }
 
 impl WebdavAuth {
@@ -38,8 +39,8 @@ impl WebdavAuth {
 
         Ok(Self {
             client: http_client.client,
-            base_url: Rc::new(base_url),
-            encrypted_token: Rc::new(http_client.encrypted_token),
+            base_url: Arc::new(base_url),
+            encrypted_token: Arc::new(http_client.encrypted_token),
         })
     }
 

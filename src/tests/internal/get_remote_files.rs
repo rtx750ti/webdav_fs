@@ -12,6 +12,7 @@ async fn get_remote_files_test() {
     let data = get_remote_files(&auth, &["./"]).await;
     for d in data {
         let remote_file = d.unwrap();
+        remote_file.build_downloader();
         println!("remote_file: {:?}", remote_file);
     }
 }
